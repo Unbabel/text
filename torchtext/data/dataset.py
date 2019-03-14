@@ -281,6 +281,23 @@ class TabularDataset(Dataset):
         super(TabularDataset, self).__init__(examples, fields, **kwargs)
 
 
+class LazilyDataset(Dataset):
+    def __init__(self, examples, fields, filter_pred=None):
+        self.filter_pred = filter_pred
+        self.examples = examples
+        self.fields = dict(fields)
+        # Unpack field tuples
+        for n, f in list(self.fields.items()):
+            if isinstance(n, tuple):
+                self.fields.update(zip(n, f))
+                del self.fields[n]
+
+    def __iter__(self):
+        for ex in self.examples:
+            if self.filter_pred(ex):
+                yield ex
+
+
 def check_split_ratio(split_ratio):
     """Check that the split ratio argument is not malformed"""
     valid_ratio = 0.

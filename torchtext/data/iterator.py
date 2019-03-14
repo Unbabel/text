@@ -252,6 +252,118 @@ class BucketIterator(Iterator):
                                 sort_within_batch=self.sort_within_batch)
 
 
+class LazilyIterator(Iterator):
+    def __init__(self, *args, buffer_size=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.buffer = []
+        if buffer_size is None:
+            # minibatches have the same size if buffer_size
+            # is divisible by batch_size
+            buffer_size = self.batch_size * 100
+        self.buffer_size = buffer_size
+
+    def data(self):
+        return iter(self.dataset)
+
+    def clear_buffer(self):
+        self.buffer.clear()
+
+    def prepare_buffer(self):
+        if self.sort:
+            self.buffer.sort(key=self.sort_key)
+        elif self.shuffle:
+            self.buffer = [self.buffer[i] for i in self.random_shuffler(range(len(self.buffer)))]
+
+    def create_batches(self):
+        self.batches = batch(self.buffer, self.batch_size, self.batch_size_fn)
+
+    def consume_buffer(self):
+        self.prepare_buffer()
+        self.create_batches()
+        for minibatch in self.batches:
+            self.iterations += 1
+            self._iterations_this_epoch += 1
+            if self.sort_within_batch:
+                if self.sort:
+                    minibatch.reverse()
+                else:
+                    minibatch.sort(key=self.sort_key, reverse=True)
+            yield Batch(minibatch, self.dataset, self.device)
+
+    def __iter__(self):
+        while True:
+            self.init_epoch()
+            self.clear_buffer()
+
+            for ex in self.data():
+                self.buffer.append(ex)                
+                if len(self.buffer) == self.buffer_size:
+                    for batch in self.consume_buffer():
+                        yield batch
+                    self.clear_buffer()
+
+            # in case the buffer is not empty
+            if len(self.buffer) > 0:
+                for batch in self.consume_buffer():
+                    yield batch
+                self.clear_buffer()
+
+            if not self.repeat:
+                return
+
+
+class LazilyBucketIterator(BucketIterator, LazilyIterator):
+
+    def create_batches(self):
+        if self.sort:
+            self.batches = batch(self.buffer,
+                                 self.batch_size,
+                                 self.batch_size_fn)
+        else:
+            self.batches = pool(self.buffer, 
+                                self.batch_size,
+                                self.sort_key,
+                                self.batch_size_fn,
+                                random_shuffler=self.random_shuffler,
+                                shuffle=self.shuffle,
+                                sort_within_batch=self.sort_within_batch,
+                                lookahead=self.buffer_size)
+
+
+class LazilyBPTTIterator(BPTTIterator, LazilyIterator):
+    # TODO: dataset[0].text = [x for y in buffer for x in y]
+
+    def __len__(self):
+        return math.ceil((len(self.dataset[0].text) / self.batch_size - 1)
+                         / self.bptt_len)
+
+    def __iter__(self):
+        text = self.dataset[0].text
+        TEXT = self.dataset.fields['text']
+        TEXT.eos_token = None
+        text = text + ([TEXT.pad_token] * int(math.ceil(len(text) / self.batch_size)
+                                              * self.batch_size - len(text)))
+        data = TEXT.numericalize([text], device=self.device)
+        data = data.view(self.batch_size, -1).t().contiguous()
+        dataset = Dataset(examples=self.dataset.examples, fields=[('text', TEXT), ('target', TEXT)])
+        
+        while True:
+            for i in range(0, len(self) * self.bptt_len, self.bptt_len):
+                self.iterations += 1
+                seq_len = min(self.bptt_len, len(data) - i - 1)
+                batch_text = data[i:i + seq_len]
+                batch_target = data[i + 1:i + 1 + seq_len]
+                if TEXT.batch_first:
+                    batch_text = batch_text.t().contiguous()
+                    batch_target = batch_target.t().contiguous()
+                yield Batch.fromvars(
+                    dataset, self.batch_size,
+                    text=batch_text,
+                    target=batch_target)
+            if not self.repeat:
+                return
+
+
 def batch(data, batch_size, batch_size_fn=None):
     """Yield elements from data in chunks of batch_size."""
     if batch_size_fn is None:
@@ -272,22 +384,22 @@ def batch(data, batch_size, batch_size_fn=None):
 
 
 def pool(data, batch_size, key, batch_size_fn=lambda new, count, sofar: count,
-         random_shuffler=None, shuffle=False, sort_within_batch=False):
+         random_shuffler=None, shuffle=False, sort_within_batch=False,
+         lookahead=100):
     """Sort within buckets, then batch, then shuffle batches.
-
-    Partitions data into chunks of size 100*batch_size, sorts examples within
+    Partitions data into chunks of size lookahead*batch_size, sorts examples within
     each chunk using sort_key, then batch these examples and shuffle the
     batches.
     """
     if random_shuffler is None:
         random_shuffler = random.shuffle
-    for p in batch(data, batch_size * 100, batch_size_fn):
-        p_batch = batch(sorted(p, key=key), batch_size, batch_size_fn) \
-            if sort_within_batch \
-            else batch(p, batch_size, batch_size_fn)
+    for p in batch(data, batch_size * lookahead, batch_size_fn):
+        if sort_within_batch:
+            p = sorted(p, key=key)
+        p_batch = batch(p, batch_size, batch_size_fn)
         if shuffle:
             for b in random_shuffler(list(p_batch)):
                 yield b
         else:
-            for b in list(p_batch):
+            for b in p_batch:
                 yield b
