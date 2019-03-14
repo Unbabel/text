@@ -252,7 +252,7 @@ class BucketIterator(Iterator):
                                 sort_within_batch=self.sort_within_batch)
 
 
-class LazilyIterator(Iterator):
+class LazyIterator(Iterator):
     def __init__(self, *args, buffer_size=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.buffer = []
@@ -312,7 +312,7 @@ class LazilyIterator(Iterator):
                 return
 
 
-class LazilyBucketIterator(BucketIterator, LazilyIterator):
+class LazyBucketIterator(BucketIterator, LazyIterator):
 
     def create_batches(self):
         if self.sort:
@@ -330,7 +330,7 @@ class LazilyBucketIterator(BucketIterator, LazilyIterator):
                                 lookahead=self.buffer_size)
 
 
-class LazilyBPTTIterator(BPTTIterator, LazilyIterator):
+class LazyBPTTIterator(BPTTIterator, LazyIterator):
     # TODO: dataset[0].text = [x for y in buffer for x in y]
 
     def __len__(self):

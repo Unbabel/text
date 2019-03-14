@@ -281,11 +281,11 @@ class TabularDataset(Dataset):
         super(TabularDataset, self).__init__(examples, fields, **kwargs)
 
 
-class LazilyDataset(Dataset):
-    def __init__(self, examples, fields, filter_pred=None):
-        self.filter_pred = filter_pred
+class LazyDataset(Dataset):
+    def __init__(self, examples, fields, filter_pred=lambda x: True):
         self.examples = examples
         self.fields = dict(fields)
+        self.filter_pred = filter_pred
         # Unpack field tuples
         for n, f in list(self.fields.items()):
             if isinstance(n, tuple):
