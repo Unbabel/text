@@ -335,9 +335,10 @@ class LazyBPTTIterator(BPTTIterator, LazyIterator):
     def __init__(self, *args, variational_bptt_len=True, **kwargs):
         super().__init__(*args, **kwargs)
         self.cur_bptt_len = self.bptt_len
-        self.batch_first = self.dataset.fields['text'].batch_first
         self.variational_bptt_len = variational_bptt_len
         self.prev_text_buffer = []
+        self.field_name = self.get_unique_field_name(self.dataset.fields)
+        self.batch_first = self.dataset.fields[self.field_name].batch_first
 
     def __len__(self):
         return self.get_len(self.buffer)
@@ -350,7 +351,7 @@ class LazyBPTTIterator(BPTTIterator, LazyIterator):
         if random.random() > 0.95:
             self.cur_bptt_len = self.bptt_len // 2
         self.cur_bptt_len = int(random.normalvariate(self.cur_bptt_len, 5))
-        self.cur_bptt_len = max(1, self.cur_bptt_len)
+        self.cur_bptt_len = max(10, self.cur_bptt_len)
 
     def clear_buffer(self):
         self.buffer.clear()
@@ -359,7 +360,7 @@ class LazyBPTTIterator(BPTTIterator, LazyIterator):
     def get_contiguous_buffer(self, buffer):
         text_buffer = [w for w in self.prev_text_buffer]
         for ex in self.buffer:
-            text = ex.text
+            text = getattr(ex, self.field_name)
             self.prev_text_buffer = []
             for w in text:
                 if len(text_buffer) + 1 <= self.cur_bptt_len:
@@ -370,9 +371,13 @@ class LazyBPTTIterator(BPTTIterator, LazyIterator):
                 break
         return text_buffer
 
+    def get_unique_field_name(self, fields):
+        assert len(fields) == 1
+        return next(iter(fields.keys()))
+
     def prepare_text_buffer(self, text):
         """ text is a list of str """
-        text_field = self.dataset.fields['text']
+        text_field = self.dataset.fields[self.field_name]
         text_field.eos_token = None  # this should be optional
 
         nb_batches = math.ceil(len(text) / self.batch_size)
@@ -381,8 +386,8 @@ class LazyBPTTIterator(BPTTIterator, LazyIterator):
 
         data = text_field.numericalize([text], device=self.device)
         data = data.view(self.batch_size, -1).t().contiguous()
-        aux_fields = [('text', text_field), ('target', text_field)]
-        aux_dataset = Dataset(self.dataset.examples, new_fields)
+        aux_fields = [(self.field_name, text_field), ('target', text_field)]
+        aux_dataset = Dataset(self.dataset.examples, aux_fields)
         return data, aux_dataset
 
     def consume_data(self, data, text_len):
@@ -397,22 +402,24 @@ class LazyBPTTIterator(BPTTIterator, LazyIterator):
             yield batch_text, batch_target
 
     def consume_buffer(self):
-        cur_text_buffer = get_contiguous_buffer(self.buffer)
-        data, dataset = prepare_text_buffer(cur_text_buffer)
+        cur_text_buffer = self.get_contiguous_buffer(self.buffer)
+        data, dataset = self.prepare_text_buffer(cur_text_buffer)
         t_len = self.get_len(cur_text_buffer)
-        for b_text, b_target in self.consume_data(data, t_len):
+        for batch_text, batch_target in self.consume_data(data, t_len):
+            kwargs = {self.field_name: batch_text, 'target': batch_target}
             yield Batch.fromvars(
                 dataset,
                 self.batch_size,
-                text=batch_text,
-                target=batch_target
+                **kwargs
             )
 
     def __iter__(self):
         while True:
             self.init_epoch()
             self.clear_buffer()
-            self.randomize_bptt_len()
+
+            if self.variational_bptt_len:
+                self.randomize_bptt_len()
 
             for ex in self.data():
                 self.buffer.append(ex)
