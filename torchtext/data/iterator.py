@@ -358,17 +358,20 @@ class LazyBPTTIterator(BPTTIterator, LazyIterator):
         self.prev_text_buffer.clear()
 
     def get_contiguous_buffer(self, buffer):
-        text_buffer = [w for w in self.prev_text_buffer]
+        text_buffer = []
+        while len(text_buffer) < self.buffer_size * self.cur_bptt_len and len(self.prev_text_buffer) > 0:
+            text_buffer.append(self.prev_text_buffer.pop(0))
+        if len(text_buffer) == self.cur_bptt_len:
+            return text_buffer
+        text = []
         for ex in self.buffer:
             text = getattr(ex, self.field_name)
             self.prev_text_buffer = []
             for w in text:
-                if len(text_buffer) + 1 <= self.cur_bptt_len:
+                if len(text_buffer) + 1 <= self.buffer_size * self.cur_bptt_len:
                     text_buffer.append(w)
                 else:
                     self.prev_text_buffer.append(w)
-            if len(self.prev_text_buffer) > 0:
-                break
         return text_buffer
 
     def get_unique_field_name(self, fields):
