@@ -282,14 +282,24 @@ class BucketIterator(Iterator):
 
 
 class LazyIterator(Iterator):
+    """
+    Consume a generator for a specific number of steps (`buffer_size`), storing
+    the examples in a buffer. The iterator will be built using this buffer.
+
+    Args:
+        buffer_size(int): The number of examples to be stored in the buffer.
+            Default: batch_size * 1024
+    """
+
     def __init__(self, *args, buffer_size=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.buffer = []
         if buffer_size is None:
             # minibatches will have the same size if buffer_size
             # is divisible by batch_size
-            buffer_size = self.batch_size * 100
+            buffer_size = self.batch_size * 2 ** 10
         self.buffer_size = buffer_size
+        self.batches = None
 
     def data(self):
         return iter(self.dataset)
@@ -378,8 +388,10 @@ class LazyBPTTIterator(BPTTIterator, LazyIterator):
 
     def get_contiguous_buffer(self):
         text_buffer = []
-        while len(text_buffer) < self.buffer_size * self.cur_bptt_len \
-                and len(self.prev_text_buffer) > 0:
+        while (
+            len(text_buffer) < self.buffer_size * self.cur_bptt_len
+            and len(self.prev_text_buffer) > 0
+        ):
             text_buffer.append(self.prev_text_buffer.pop(0))
         if len(text_buffer) == self.cur_bptt_len:
             return text_buffer
@@ -461,7 +473,8 @@ def batch(data, batch_size, batch_size_fn=None):
     if batch_size_fn is None:
         def batch_size_fn(new, count, sofar):
             return count
-    minibatch, size_so_far = [], 0
+    minibatch = []
+    size_so_far = 0
     for ex in data:
         minibatch.append(ex)
         size_so_far = batch_size_fn(ex, len(minibatch), size_so_far)
